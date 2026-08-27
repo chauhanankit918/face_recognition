@@ -1,0 +1,32 @@
+# Local / single-host run: docker compose up --build
+#
+# The first face request pulls the ~330 MB buffalo_l pack into the
+# `models` volume; later restarts reuse it.
+
+services:
+  web:
+    build: .
+    image: face-recognise:latest
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}"
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: "${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}"
+      DJANGO_CSRF_TRUSTED_ORIGINS: "${DJANGO_CSRF_TRUSTED_ORIGINS:-}"
+      # Set to 1 to load the model at boot rather than on the first request.
+      FACE_WARM_MODEL: "${FACE_WARM_MODEL:-0}"
+    volumes:
+      - data:/data                        # SQLite file + uploaded faces
+      - models:/home/app/.insightface     # InsightFace model pack
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  data:
+  models:

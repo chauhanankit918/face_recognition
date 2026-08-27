@@ -1,0 +1,20 @@
+# Build context: only what the image actually needs.
+.git
+.gitignore
+.github
+.gitlab-ci.yml
+venv/
+__pycache__/
+*.py[cod]
+.cache/
+db.sqlite3
+media/
+staticfiles/
+.env
+*.md
+!README.md
+coverage.xml
+.coverage
+docker-compose*.yml
+Dockerfile
+.dockerignore

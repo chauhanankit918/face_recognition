@@ -7,6 +7,7 @@
 stages:
   - lint
   - test
+  - build
   - integration
 
 default:
@@ -68,6 +69,48 @@ deploy-checklist:
   # Expected to fail until DEBUG / SECRET_KEY / ALLOWED_HOSTS move into the
   # environment — surfaced rather than silenced.
   allow_failure: true
+
+docker-build:
+  stage: build
+  image: docker:cli
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+    IMAGE: $CI_REGISTRY_IMAGE
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker pull "$IMAGE:cache" || true
+    - docker build --cache-from "$IMAGE:cache" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" .
+    # Boot the image and prove the API answers: /api/auth/me/ must reject an
+    # anonymous caller with 401, which exercises URLs, DRF auth and the DB.
+    - |
+      docker run -d --name smoke -p 8000:8000 \
+        -e DJANGO_SECRET_KEY=smoke-test-key-not-a-real-secret \
+        -e DJANGO_ALLOWED_HOSTS=docker,localhost,127.0.0.1 \
+        "$IMAGE:$CI_COMMIT_SHORT_SHA"
+      for i in $(seq 1 30); do
+        if wget -q -O /dev/null -S "http://docker:8000/api/auth/me/" 2>&1 | grep -q "401"; then
+          echo "API is up"; ok=1; break
+        fi
+        sleep 2
+      done
+      docker logs smoke
+      [ "${ok:-0}" = "1" ] || { echo "container never answered"; exit 1; }
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - |
+      if [ "$CI_COMMIT_BRANCH" = "$CI_DEFAULT_BRANCH" ]; then
+        docker tag "$IMAGE:$CI_COMMIT_SHORT_SHA" "$IMAGE:latest"
+        docker tag "$IMAGE:$CI_COMMIT_SHORT_SHA" "$IMAGE:cache"
+        docker push "$IMAGE:latest"
+        docker push "$IMAGE:cache"
+      fi
+  after_script:
+    - docker rm -f smoke || true
 
 integration:
   extends: .python

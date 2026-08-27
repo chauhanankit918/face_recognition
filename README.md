@@ -23,6 +23,50 @@ request that needs it, so that first call takes noticeably longer than the rest.
 To warm it at boot instead, call `services.face_engine.get_app()` from an
 `AppConfig.ready()`.
 
+## Docker
+
+```bash
+cp .env.example .env                 # then fill in DJANGO_SECRET_KEY
+docker compose up --build
+```
+
+The API is on `localhost:8000`. Two named volumes keep state out of the image:
+`data` (the SQLite file and uploaded faces) and `models` (the `buffalo_l` pack,
+fetched on the first request that needs it — set `FACE_WARM_MODEL=1` to pull it
+at boot instead). Migrations run on every start via `docker-entrypoint.sh`;
+gunicorn then serves the app, with WhiteNoise handling the admin's static files.
+
+The image is a two-stage build on `python:3.14-slim` and runs as a non-root
+user. It is large (~2 GB) — onnxruntime, scipy, scikit-image and opencv are all
+runtime dependencies.
+
+Without compose:
+
+```bash
+docker build -t face-recognise .
+docker run -p 8000:8000 \
+  -e DJANGO_SECRET_KEY=... -e DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1 \
+  -v face-data:/data -v face-models:/home/app/.insightface \
+  face-recognise
+```
+
+### Configuration
+
+Everything below has a working default, so `manage.py runserver` still needs no
+environment at all; containers should set at least the first three.
+
+| Variable                      | Default                    | Purpose                                  |
+|-------------------------------|----------------------------|------------------------------------------|
+| `DJANGO_SECRET_KEY`           | insecure dev key           | Signing key — set this anywhere real     |
+| `DJANGO_DEBUG`                | `True`                     | `False` in the image                     |
+| `DJANGO_ALLOWED_HOSTS`        | empty                      | Comma-separated hostnames                |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty                      | Needed for the admin behind HTTPS        |
+| `DJANGO_SQLITE_PATH`          | `BASE_DIR/db.sqlite3`      | `/data/db.sqlite3` in the image          |
+| `DJANGO_MEDIA_ROOT`           | `BASE_DIR/media`           | `/data/media` in the image               |
+| `DJANGO_STATIC_ROOT`          | `BASE_DIR/staticfiles`     | `collectstatic` target                   |
+| `FACE_WARM_MODEL`             | `0`                        | `1` loads the model pack at boot         |
+| `DJANGO_SKIP_MIGRATE`         | `0`                        | `1` skips migrations on container start  |
+
 ## Authentication
 
 Token-based (`rest_framework.authtoken`). Send the token on every protected call:
@@ -158,9 +202,27 @@ detection retried; `padded_retry` in the response reports when that happened.
 The integration suite asserts on real photos that degraded images of one person
 still match, and that **no** pair of different people clears the gate.
 
+## CI
+
+The same pipeline is defined for both hosts — [`.gitlab-ci.yml`](.gitlab-ci.yml)
+and [`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+
+| Stage       | What runs                                                                  |
+|-------------|----------------------------------------------------------------------------|
+| lint        | `compileall`, `manage.py check`, `makemigrations --check`                    |
+| test        | the mocked suite under coverage, plus an advisory `check --deploy`           |
+| build       | build the image, boot it, assert `/api/auth/me/` answers 401, push on default branch |
+| integration | the real-model tests — manual on GitLab, `workflow_dispatch` on GitHub       |
+
+Both pin the test job to the mocked labels (`users services.tests`) so CI never
+downloads the 330 MB pack by accident, and both cache `~/.insightface` for the
+integration job. Images push to the built-in registry of whichever host runs the
+pipeline (`$CI_REGISTRY_IMAGE` / `ghcr.io/<owner>/<repo>`).
+
 ## Before production
 
-- `DEBUG = False`, a `SECRET_KEY` from the environment, and a real `ALLOWED_HOSTS`.
+- `DJANGO_DEBUG=False`, a real `DJANGO_SECRET_KEY`, and a real `DJANGO_ALLOWED_HOSTS`
+  (the Docker image already defaults the first; the other two are yours to set).
 - Serve media from S3 or similar rather than Django; reference photos are biometric
   data, so restrict access and check your retention obligations (GDPR/DPDP).
 - **There is no liveness detection.** A printed photo or a phone screen held to the
