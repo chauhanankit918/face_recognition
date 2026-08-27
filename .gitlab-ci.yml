@@ -1,0 +1,91 @@
+# GitLab CI for face_recognise (Django + DRF + InsightFace).
+#
+# The mocked unit suite is the gate: it patches the recognition model out, so
+# it needs neither a GPU nor the 330 MB model pack. The real-model checks in
+# `services.test_engine_integration` run as a separate manual job.
+
+stages:
+  - lint
+  - test
+  - integration
+
+default:
+  image: python:3.14-slim
+  interruptible: true
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  DJANGO_SETTINGS_MODULE: "face_recognise.settings"
+
+.python:
+  before_script:
+    # opencv-python links against libGL/glib even when it is only imported.
+    - apt-get update -qq
+    - apt-get install -yqq --no-install-recommends libgl1 libglib2.0-0
+    - rm -rf /var/lib/apt/lists/*
+    - python -m pip install -r requirements.txt
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip
+
+lint:
+  extends: .python
+  stage: lint
+  script:
+    - python -m compileall -q face_recognise services users manage.py
+    - python manage.py check
+    - python manage.py makemigrations --check --dry-run
+
+test:
+  extends: .python
+  stage: test
+  script:
+    - python -m pip install coverage
+    # Explicit labels: a bare `manage.py test` would also collect the
+    # real-model integration module.
+    - coverage run manage.py test users services.tests --verbosity 2 --shuffle
+    - coverage report
+    - coverage xml
+  coverage: '/^TOTAL\s+\d+\s+\d+\s+(\d+(?:\.\d+)?)%/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    expire_in: 1 week
+
+deploy-checklist:
+  extends: .python
+  stage: test
+  script:
+    - python manage.py check --deploy --fail-level WARNING
+  # Expected to fail until DEBUG / SECRET_KEY / ALLOWED_HOSTS move into the
+  # environment — surfaced rather than silenced.
+  allow_failure: true
+
+integration:
+  extends: .python
+  stage: integration
+  script:
+    # InsightFace only looks in ~/.insightface, but GitLab can cache paths
+    # inside the project dir, so point one at the other.
+    - mkdir -p "$CI_PROJECT_DIR/.cache/insightface" && ln -sfn "$CI_PROJECT_DIR/.cache/insightface" "$HOME/.insightface"
+    - python manage.py test services.test_engine_integration --verbosity 2
+  cache:
+    - key:
+        files:
+          - requirements.txt
+      paths:
+        - .cache/pip
+    - key: insightface-buffalo_l
+      paths:
+        - .cache/insightface
+  timeout: 1h
+  when: manual
+  allow_failure: true
