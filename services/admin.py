@@ -14,6 +14,7 @@ class FaceProfileAdmin(admin.ModelAdmin):
 class VerificationAttemptAdmin(admin.ModelAdmin):
     list_display = ['user', 'confidence_percent', 'cosine_similarity', 'is_match',
                     'error_code', 'created_at']
+
     list_filter = ['is_match', 'error_code']
     search_fields = ['user__username', 'user__email']
     readonly_fields = [f.name for f in VerificationAttempt._meta.fields]
